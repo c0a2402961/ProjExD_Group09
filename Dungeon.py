@@ -12,7 +12,10 @@ FPS = 60
 DEBUG_DRAW_GROUND_LINE = True
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-STAGE2_TMR = 1500 
+
+STAGE2_TMR = 1500
+BOSS_TMR = 1200
+
 GROUND_Y = HEIGHT - 60
 # ===== HP/ダメージ（追加）=====
 HP_MAX = 100
@@ -31,9 +34,14 @@ STATE_GAMEOVER = 4
 BOX_W, BOX_H = 220, 110
 BOX_GAP = 14
 BOX_MARGIN = 20
+# ★ 足元補正値
+FOOT_OFFSET_BIRD = 10
+FOOT_OFFSET_ENEMY = 5
+FOOT_OFFSET_BOSS = 8
+
 
 # =========================
-# クラス外関数
+# 共通関数
 # =========================
 def load_font(size):
     return pg.font.SysFont("meiryo", size)
@@ -43,7 +51,6 @@ def load_image(filename: str) -> pg.Surface:
     ※displayが未生成のタイミングでも落ちないようにする
     """
     candidates = [os.path.join("fig", filename), filename]
-    last_err = None
     for path in candidates:
         try:
             img = pg.image.load(path)
@@ -51,9 +58,9 @@ def load_image(filename: str) -> pg.Surface:
             if pg.display.get_init() and pg.display.get_surface() is not None:
                 img = img.convert_alpha()
             return img
-        except Exception as e:
-            last_err = e
-    raise SystemExit(f"画像 '{filename}' の読み込みに失敗しました: {last_err}")
+        except:
+            pass
+    raise SystemExit(f"画像 {filename} の読み込みに失敗しました")
 # =====================
 # 画面描画
 # =====================
@@ -103,15 +110,6 @@ def draw_hp(screen, hp):
 
 
 
-def check_bound(obj_rct: pg.Rect) -> tuple[bool, bool]:
-    yoko, tate = True, True
-    if obj_rct.left < 0 or WIDTH < obj_rct.right:
-        yoko = False
-    if obj_rct.top < 0 or HEIGHT < obj_rct.bottom:
-        tate = False
-    return yoko, tate
-
-
 def clamp_in_screen(rect: pg.Rect) -> pg.Rect:
     rect.left = max(0, rect.left)
     rect.right = min(WIDTH, rect.right)
@@ -159,9 +157,6 @@ def stage_params(stage: int) -> dict[str, int | str]:
 
 
 def should_switch_stage(tmr: int) -> bool:
-    """
-    ステージ2へ移行する条件（仕様が無いので仮定：一定時間）
-    """
     return tmr >= STAGE2_TMR
 
 #高柳変更
@@ -196,7 +191,6 @@ def detect_ground_y(bg_scaled: pg.Surface) -> int:
             s += lum
             s2 += lum * lum
             n += 1
-
         mean = s / n
         var = (s2 / n) - mean * mean
         std = (var ** 0.5) if var > 0 else 0.0
@@ -303,7 +297,7 @@ class Background:
         self._x2 = WIDTH
         set_ground_y(detect_ground_y(self._img))
 
-    def update(self, screen: pg.Surface):
+    def update(self, screen):
         self._x1 -= self._speed
         self._x2 -= self._speed
         if self._x1 <= -WIDTH: self._x1 = self._x2 + WIDTH
@@ -331,7 +325,7 @@ class Bird(pg.sprite.Sprite):
 
         # 物理（ここは一切変更しない）
         self._vx = 0
-        self._vy = 0.0
+        self._vy = 0
         self._speed = 8
         self._gravity = 0.85
         self._jump_v0 = -15
@@ -339,7 +333,7 @@ class Bird(pg.sprite.Sprite):
         self._max_jump = 2
 
         self.rect.center = xy
-        self.rect.bottom = get_ground_y()
+        self.rect.bottom = get_ground_y() + FOOT_OFFSET_BIRD
 
         # --- HP/無敵時間（追加） ---高柳
         self.hp = 100
@@ -470,11 +464,370 @@ class Enemy(pg.sprite.Sprite):
         ):
             self.kill()
 
-    def get_rect(self) -> pg.Rect:
-        return self.rect
 
-    def get_speed(self) -> int:
-        return self._speed
+class Boss(pg.sprite.Sprite):
+    def __init__(self):
+        super().__init__()
+
+        self.base_image = pg.transform.smoothscale(
+            load_image("zerueru1.png"), (200, 200)
+        )
+        self.hit_image = self.base_image.copy()
+        self.hit_image.fill((255, 80, 80), special_flags=pg.BLEND_RGBA_MULT)
+
+        self.image = self.base_image
+        self.rect = self.image.get_rect()
+        self.rect.centerx = WIDTH // 2
+        self.rect.bottom = get_ground_y() + FOOT_OFFSET_BOSS
+
+        self._vx = random.choice([-4, 4])
+        self._vy = 0
+        self._gravity = 0.8
+        self._jump_v0 = -14
+
+        self._action_tmr = 0
+        self._next_action = random.randint(60, 120)
+
+        self.hit_timer = 0
+
+    def update(self):
+        self._action_tmr += 1
+        if self._action_tmr >= self._next_action:
+            self._action_tmr = 0
+            self._next_action = random.randint(60, 120)
+            self._vx = random.choice([-4, 4])
+            if random.random() < 0.4 and self.rect.bottom >= get_ground_y() + FOOT_OFFSET_BOSS:
+                self._vy = self._jump_v0
+
+        self.rect.x += self._vx
+        if self.rect.left <= 80 or self.rect.right >= WIDTH - 80:
+            self._vx *= -1
+
+        self._vy += self._gravity
+        self.rect.y += int(self._vy)
+
+        if self.rect.bottom >= get_ground_y() + FOOT_OFFSET_BOSS:
+            self.rect.bottom = get_ground_y() + FOOT_OFFSET_BOSS
+            self._vy = 0
+
+        if self.hit_timer > 0:
+            self.hit_timer -= 1
+
+        self.image = self.hit_image if self.hit_timer > 0 else self.base_image
+
+    def on_hit(self):
+        self.hit_timer = 10
+
+    def draw(self, screen):
+        screen.blit(self.image, self.rect)
+
+
+
+    
+class Explosion(pg.sprite.Sprite):
+    """
+    爆発エフェクト：中心で拡大縮小を繰り返しながら消滅
+    """
+    def __init__(self, center_xy: tuple[int, int], life: int = 30):
+        super().__init__()
+        img = load_image("explosion.gif")
+        self._imgs = [img, pg.transform.flip(img, True, True)] # 拡大縮小用に2枚用意
+        self.image = self._imgs[0]
+        self.rect = self.image.get_rect(center=center_xy)
+        self._life = life
+
+    def update(self) -> None:
+        self._life -= 1
+        self.image = self._imgs[(self._life // 5) % 2] # 5フレームごとに切替
+        if self._life <= 0:
+            self.kill()
+
+class Beam(pg.sprite.Sprite):
+    """
+    攻撃弾（ビーム）。
+
+    仕様:
+    - 発射位置から右方向へ直進
+    - 画面外に出たら消滅
+    """
+    RANGE_PX = 200  # ビーム到達距離（発射位置からの相対）
+    def __init__(self, start_xy: tuple[int, int]):
+        super().__init__()
+        self.image = load_image("beam_k.png")
+        self.rect = self.image.get_rect(center=start_xy)
+        self._vx = 16
+        self._end_x = self.rect.centerx + self.RANGE_PX
+
+    def update(self) -> None:
+        self.rect.x += self._vx
+        if self.rect.left >= self._end_x:
+            self.kill()
+
+class Arrow(pg.sprite.Sprite):
+    """
+    矢：放物線を描きつつ右へ進む
+    """
+    def __init__(self, start_xy: tuple[int, int]):
+        super().__init__()
+        self._base_image = load_image("arrow.png")  # 元画像を保持（回転はここから作る）
+        self.image = self._base_image
+        self.image = pg.transform.rotozoom(self._base_image, 0, 0.2)
+        self.rect = self.image.get_rect(center=start_xy)
+
+        self._vx = 16
+        self._vy = -10.5
+        self._g = 0.6
+
+        self._angle = 0.0  # 現在角度（無駄な回転を減らす用）
+
+    def update(self) -> None:
+        """
+        矢を更新する。
+        - 右方向へ進みつつ重力で落下する
+        - 上昇中(_vy<0)は右向き固定
+        - 落下開始後(_vy>=0)は進行方向に合わせて右下向きに回転
+        - 地面に触れた瞬間に消滅
+        """
+        # 位置更新
+        self.rect.x += self._vx
+        self._vy += self._g
+        self.rect.y += int(self._vy)
+
+        # --- 向き更新 ---
+        # 発射直後（上昇中）は右向き固定、落ち始めたら進行方向に向ける
+        if self._vy < 0:
+            new_angle = 0.0
+        else:
+            # pygame座標はyが下に増えるので、角度は -atan2(vy, vx)
+            new_angle = -math.degrees(math.atan2(self._vy, self._vx)) - 45
+
+        # 角度が少し変わったときだけ回転（軽量化）
+        if abs(new_angle - self._angle) > 1.0:
+            self._angle = new_angle
+            center = self.rect.center
+            self.image = pg.transform.rotozoom(self._base_image, self._angle, 0.2)
+            self.rect = self.image.get_rect(center=center)
+
+        # 地面に触れた瞬間消滅
+        if self.rect.bottom >= get_ground_y():
+            self.kill()
+        if self.rect.left > WIDTH:
+            self.kill()
+
+
+class ItemDef:
+    """
+    アイテムの“定義情報”を保持するクラス（スポーンや描画用）。
+
+    Fields:
+    - item_id: アイテム識別子（例: "Beam", "arrow", "kinoko", "tabaco"）
+    - category: "attack" または "status"
+    - img_file: 画像ファイル名
+    - weight: 重み付き抽選で使う重み
+    - scale: 描画倍率（Item生成時に適用）
+    """
+    def __init__(self, item_id: str, category: str, img_file: str, weight: int, scale: float = 1.0):
+        self._item_id = item_id          # "Beam", "kinoko" など
+        self._category = category        # "attack" or "status"
+        self._img_file = img_file        # 画像ファイル名
+        self._weight = weight
+        self._scale = scale
+
+    def get_item_id(self) -> str:
+        return self._item_id
+
+    def get_category(self) -> str:
+        return self._category
+
+    def get_img_file(self) -> str:
+        return self._img_file
+    
+    def get_weight(self) -> int:
+        return self._weight
+
+    def get_scale(self) -> float:
+        return self._scale
+
+class Inventory:
+    """
+    プレイヤーの所持アイテム状態を管理する。
+
+    仕様:
+    - 攻撃アイテムは1つだけ保持（attackスロット）
+    - 状態アイテムは1つだけ保持（statusスロット）
+    - 同カテゴリで別 item_id を取得した場合は、後から取った方で置換する
+    """
+    def __init__(self, item_defs: dict[str, ItemDef]):
+        self._defs = item_defs
+        self._attack_id = None
+        self._status_id = None
+
+    def pickup_attack(self, item_id: str) -> None:
+        self._attack_id = item_id
+
+    def pickup_status_basic(self, item_id: str) -> None:
+        self._status_id = item_id
+
+    def clear_status(self) -> None:
+        self._status_id = None
+
+    def get_attack(self) -> str | None:
+        return self._attack_id
+
+    def get_status(self) -> str | None:
+        return self._status_id
+    
+class Item(pg.sprite.Sprite):
+    """
+    画面右端から左へ流れるアイテム（取得対象）。
+
+    - 画像は ItemDef に従って読み込む（scaleも適用）
+    - 出現Xは右端外（WIDTH + 乱数）
+    - 出現Yは「画面上限〜地面直上」の範囲でランダム
+    - updateで左へ移動し、画面外に出たら消滅
+    """
+    def __init__(self, idef: ItemDef, stage: int):
+        super().__init__()
+        self._item_id = idef.get_item_id()
+        self._category = idef.get_category()
+        self._speed = stage_params(stage)["item_speed"]
+
+        img = load_image(idef.get_img_file())
+        if idef.get_scale() != 1.0:
+            img = pg.transform.rotozoom(img, 0, idef.get_scale())
+        self.image = img
+        self.rect = self.image.get_rect()
+
+        self.rect.left = WIDTH + random.randint(0, 200)
+
+        # 地面より上のどこかに出す
+        gy = get_ground_y()
+        margin = 10
+        lowest = gy - (self.rect.height // 2) - margin   # これより下に出さない
+        highest = max(60,self.rect.height // 2 + margin)                                     # これより上に出さない（画面上部）
+
+        if highest > lowest:
+            self.rect.centery = (highest + lowest) // 2
+        else:
+            self.rect.centery = random.randint(highest, lowest)
+
+
+    def update(self) -> None:
+        self.rect.x -= self._speed
+        if self.rect.right < 0:
+            self.kill()
+
+    def get_item_id(self) -> str:
+        return self._item_id
+
+    def get_category(self) -> str:
+        return self._category
+    
+
+# スポーン間隔(フレーム) と スポーン確率
+ITEM_SPAWN_INTERVAL_STAGE1 = 90   # 1.5秒(60FPS想定)
+ITEM_SPAWN_INTERVAL_STAGE2 = 70
+ITEM_SPAWN_PROB_STAGE1 = 0.55
+ITEM_SPAWN_PROB_STAGE2 = 0.65
+
+
+def pick_weighted_item_id(item_defs: dict[str, ItemDef], stage: int) -> str:
+    """
+    item_defs の weight に基づいて item_id を1つ返す（重み付き抽選）。
+
+    Args:
+        item_defs: item_id -> ItemDef の辞書
+        stage: 現状は抽選ロジックに影響しないが、将来ステージ別抽選に拡張できるため引数として保持
+
+    Returns:
+        str: 抽選された item_id
+    """
+    ids = list(item_defs.keys())
+    weights = [max(0, item_defs[i].get_weight()) for i in ids]
+    total = sum(weights)
+    if total <= 0:
+        # 全部0なら先頭
+        return ids[0]
+
+    r = random.randint(1, total)
+    acc = 0
+    for i, w in zip(ids, weights):
+        acc += w
+        if r <= acc:
+            return i
+    return ids[-1]
+
+
+def maybe_spawn_item(tmr: int, stage: int, item_defs: dict[str, ItemDef], items: pg.sprite.Group) -> None:
+    """
+    アイテムをスポーンするかを判定し、スポーンする場合は items に追加する。
+
+    - stage に応じてスポーン間隔(interval)と確率(prob)を切り替える
+    - tmr が interval の倍数のタイミングのみ抽選する
+    - 当選したら重み付き抽選で item_id を選ぶ
+    """
+    if stage == 1:
+        interval = ITEM_SPAWN_INTERVAL_STAGE1
+        prob = ITEM_SPAWN_PROB_STAGE1
+    else:
+        interval = ITEM_SPAWN_INTERVAL_STAGE2
+        prob = ITEM_SPAWN_PROB_STAGE2
+
+    if tmr % interval != 0:
+        return
+
+    if random.random() > prob:
+        return
+
+    item_id = pick_weighted_item_id(item_defs, stage)
+    items.add(Item(item_defs[item_id], stage))
+    
+def apply_status_pickup(item_id: str, inv: Inventory, bird: Bird) -> None:
+    """
+    状態アイテム取得時の特殊ルールを適用する。
+
+    仕様:
+    - tabaco：所持中は二段ジャンプ不可（max_jump=1）
+    - kinoko：
+        - 無状態で取得 -> max_jump=3（状態は kinoko）
+        - tabaco所持中に取得 -> tabacoを打ち消し無状態へ（max_jump=2）
+
+    副作用:
+    - inv の状態スロット（status）を書き換える
+    - bird の最大ジャンプ回数を変更する
+    """
+    cur_status = inv.get_status()
+
+    if item_id == "tabaco":
+        inv.pickup_status_basic("tabaco")
+        bird.set_max_jump(1)
+        return
+
+    if item_id == "kinoko":
+        if cur_status == "tabaco":
+            # 打ち消し：無状態へ戻す
+            inv.clear_status()
+            bird.set_max_jump(2)
+            return
+        else:
+            inv.pickup_status_basic("kinoko")
+            bird.set_max_jump(3)
+            return
+
+    # 他の状態アイテムが増えたらここに追加
+    inv.pickup_status_basic(item_id)
+
+def apply_status_from_current(inv: Inventory, bird: Bird) -> None:
+    """
+    ステージ切替などで、現在の所持状態に合わせてジャンプ数を再適用したい場合用
+    """
+    st = inv.get_status()
+    if st == "tabaco":
+        bird.set_max_jump(1)
+    elif st == "kinoko":
+        bird.set_max_jump(3)
+    else:
+        bird.set_max_jump(2)
 
 
 
@@ -803,106 +1156,9 @@ def main():
     bird = Bird(3, (200, get_ground_y()))
     
     enemies = pg.sprite.Group()
-    items = pg.sprite.Group()
-    beams = pg.sprite.Group()
-    beams_tbos = pg.sprite.Group()
-    arrows = pg.sprite.Group()
-    exps = pg.sprite.Group()
 
-    ITEM_DEFS = {
-        # 攻撃
-        "Beam":  ItemDef("Beam",  "attack", "beam_k.png",  weight=5, scale=1.0),
-        "arrow":   ItemDef("arrow",   "attack", "arrow.png",   weight=3, scale=0.2),
-        # 状態
-        "kinoko": ItemDef("kinoko", "status", "kinoko.png", weight=4, scale=0.1),
-        "tabaco": ItemDef("tabaco", "status", "tabaco.png", weight=2, scale=0.03),
-    }
-    inv = Inventory(ITEM_DEFS)
-
-    UI_ICON_SIZE = 52
-
-    def make_ui_icon(item_id: str) -> pg.Surface:
-        img = load_image(ITEM_DEFS[item_id].get_img_file())
-        w, h = img.get_size()
-        s = UI_ICON_SIZE / max(w, h)
-        nw, nh = max(1, int(w * s)), max(1, int(h * s))
-        return pg.transform.smoothscale(img, (nw, nh))
-
-    UI_ICONS = {item_id: make_ui_icon(item_id) for item_id in ITEM_DEFS.keys()}    
-
-    # ===== 他の人のアイテムGroupを受け取る場所 =====
-    # 統合するときは、次の1行を「相手が作った items（pg.sprite.Group）」に差し替えるだけでOK
-    items = pg.sprite.Group()
-
-    # ===== HP/Score/UI =====
-    hp = HP_MAX
-    score = 0
-    font = pg.font.Font(None, 36)
-    dmg_popup_tmr = 0
-    inv_tmr = 0
-
-    # ===== 右下UI（Attack/Status） =====
-    current_attack: str | None = None
-    current_status: str | None = None
-
-    font_ui = pg.font.Font(None, 26)
-    font_item = pg.font.Font(None, 22)
-
-    attack_box = pg.Rect(
-        WIDTH - (BOX_W * 2 + BOX_GAP) - BOX_MARGIN,
-        HEIGHT - BOX_H - BOX_MARGIN,
-        BOX_W, BOX_H
-    )
-    status_box = pg.Rect(
-        WIDTH - BOX_W - BOX_MARGIN,
-        HEIGHT - BOX_H - BOX_MARGIN,
-        BOX_W, BOX_H
-    )
-
-    def read_item_info(it) -> tuple[str | None, str | None]:
-        """
-        他人実装の属性名ズレを吸収して (kind, name) を返す
-        kind: "attack" or "status"
-        name: 表示名
-        """
-        kind = None
-        for k in ("kind", "type", "category"):
-            v = getattr(it, k, None)
-            if isinstance(v, str):
-                kind = v.lower()
-                break
-
-        name = None
-        for k in ("name", "item_name", "label"):
-            v = getattr(it, k, None)
-            if isinstance(v, str):
-                name = v
-                break
-
-        if kind in ("atk", "attack_item"):
-            kind = "attack"
-        if kind in ("sts", "status_item"):
-            kind = "status"
-
-        return kind, name
-
-    # ===== Score縁取り描画（追加）=====
-    def draw_text_outline(surf: pg.Surface, text: str, font_: pg.font.Font, pos: tuple[int, int],
-                          text_color: tuple[int, int, int], outline_color: tuple[int, int, int],
-                          outline_px: int = 2) -> None:
-        x, y = pos
-        outline = font_.render(text, True, outline_color)
-        for ox in range(-outline_px, outline_px + 1):
-            for oy in range(-outline_px, outline_px + 1):
-                if ox == 0 and oy == 0:
-                    continue
-                surf.blit(outline, (x + ox, y + oy))
-        body = font_.render(text, True, text_color)
-        surf.blit(body, (x, y))
-    boss_group = pg.sprite.Group()
-    beams_tbos = pg.sprite.Group()
-    meteors = pg.sprite.Group()
-
+    boss = None
+    boss_active = False
     tmr = 0
     mid_boss_spawned = False
     mid_boss_defeated = False
@@ -1211,6 +1467,13 @@ def main():
         
         elif game_state == STATE_GAMEOVER:
             draw_gameover_screen(screen)
+
+        if boss_active and boss:
+            boss.update()
+            if bird.rect.colliderect(boss.rect):
+                if bird.get_vy() > 0 and bird.rect.bottom <= boss.rect.top + 20:
+                    boss.on_hit()
+            boss.draw(screen)
 
         pg.display.update()
         
