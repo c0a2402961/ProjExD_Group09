@@ -8,6 +8,7 @@ import math
 WIDTH = 1100
 HEIGHT = 650
 FPS = 60
+
 DEBUG_DRAW_GROUND_LINE = True
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -18,7 +19,14 @@ HP_MAX = 100
 DMG = 20
 POPUP_FRAMES = 120   # 約2秒（60FPS想定）
 INV_FRAMES = 30      # 無敵0.5秒（接触中に毎フレーム減るのを防ぐための実装上の仮定）
-
+# =====================
+# ゲーム状態
+# =====================
+STATE_START = 0
+STATE_PLAY = 1
+STATE_TO_FINAL = 2
+STATE_CLEAR = 3
+STATE_GAMEOVER = 4
 # ===== 右下UI（Attack/Status）（追加）=====
 BOX_W, BOX_H = 220, 110
 BOX_GAP = 14
@@ -27,6 +35,8 @@ BOX_MARGIN = 20
 # =========================
 # クラス外関数
 # =========================
+def load_font(size):
+    return pg.font.SysFont("meiryo", size)
 def load_image(filename: str) -> pg.Surface:
     """
     画像読み込み（fig/filename -> filename の順に探す）
@@ -44,6 +54,54 @@ def load_image(filename: str) -> pg.Surface:
         except Exception as e:
             last_err = e
     raise SystemExit(f"画像 '{filename}' の読み込みに失敗しました: {last_err}")
+# =====================
+# 画面描画
+# =====================
+
+def draw_start_screen(screen):
+    screen.fill((0, 0, 0))
+
+    font = load_font(80)
+    title = font.render("こうかとんダンジョン", True, (255,255,255))
+    title_rect = title.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 80))
+    screen.blit(title, title_rect)
+
+    font2 = load_font(40)
+    start = font2.render("ENTERでスタート", True, (200,200,200))
+    start_rect = start.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 40))
+    screen.blit(start, start_rect)
+
+
+def draw_to_final_screen(screen):
+    screen.fill((0, 0, 0))
+    font = load_font(80)
+    text = font.render("最終ステージへ", True, (255,255,0))
+    rect = text.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+    screen.blit(text, rect)
+
+
+def draw_clear_screen(screen):
+    screen.fill((0, 0, 0))
+    font = load_font(80)
+    text = font.render("クリア", True, (0,255,0))
+    rect = text.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+    screen.blit(text, rect)
+
+
+def draw_gameover_screen(screen):
+    screen.fill((0, 0, 0))
+    font = load_font(80)
+    text = font.render("GAME OVER", True, (255,0,0))
+    rect = text.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+    screen.blit(text, rect)
+
+
+#仮設定
+def draw_hp(screen, hp):
+    font =load_font(36)
+    screen.blit(font.render(f"HP: {hp}", True, (255,255,255)), (20, 20))
+
+
 
 def check_bound(obj_rct: pg.Rect) -> tuple[bool, bool]:
     yoko, tate = True, True
@@ -731,12 +789,14 @@ def apply_status_from_current(inv: Inventory, bird: Bird) -> None:
 # メイン
 # =========================
 def main():
-    pg.display.set_caption("こうかとん横スクロール（中ボス追加）")
+    pg.display.set_caption("こうかとんダンジョン")
     screen = pg.display.set_mode((WIDTH, HEIGHT))
     clock = pg.time.Clock()
-
+    
    
 
+    game_state = STATE_START
+    state_timer = 0
     stage = 1
     params = stage_params(stage)
     bg = Background(params["bg_file"], params["bg_speed"])
@@ -776,7 +836,7 @@ def main():
 
     # ===== HP/Score/UI =====
     hp = HP_MAX
-    score = 5600
+    score = 0
     font = pg.font.Font(None, 36)
     dmg_popup_tmr = 0
     inv_tmr = 0
@@ -846,30 +906,71 @@ def main():
     tmr = 0
     mid_boss_spawned = False
     mid_boss_defeated = False
+
     while True:
         key_lst = pg.key.get_pressed()
         for event in pg.event.get():
             if event.type == pg.QUIT: return
-            if event.type == pg.KEYDOWN:
-                if event.key == pg.K_ESCAPE: return
-                if event.key == pg.K_UP: bird.try_jump()
-                
-                if event.key == pg.K_SPACE:
-                    atk_id = inv.get_attack()
-                    # 何も持ってなければ撃てない
-                    if atk_id == "Beam":
-                        beams.add(Beam((bird.get_rect().right + 30, bird.get_rect().centery)))
-                    elif atk_id == "arrow":
-                        arrows.add(Arrow((bird.get_rect().right + 30, bird.get_rect().centery)))
 
-        # ステージ遷移
-        if stage == 1 and tmr >= STAGE2_TMR:
-            stage = 2
-            params = stage_params(stage)
-            bg = Background(params["bg_file"], params["bg_speed"])
-            bird.get_rect().bottom = get_ground_y()
-            apply_status_from_current(inv, bird)
-            enemies.empty()  # ★ステージ1の敵を消して、以後は2の画像だけ出す
+            if event.type == pg.KEYDOWN:
+                # ===== スタート画面 =====
+                if game_state == STATE_START:
+                    if event.key == pg.K_RETURN:
+                        game_state = STATE_PLAY
+                        tmr = 0  # タイマーリセット
+
+            # ===== プレイ中 =====
+                elif game_state == STATE_PLAY:
+                    if event.key == pg.K_UP:
+                        bird.try_jump()
+                    if event.key == pg.K_ESCAPE: 
+                        return
+                    if event.key == pg.K_SPACE:
+                        atk_id = inv.get_attack()
+                    # 何も持ってなければ撃てない
+                        if atk_id == "Beam":
+                            beams.add(Beam((bird.get_rect().right + 30, bird.get_rect().centery)))
+                        elif atk_id == "arrow":
+                            arrows.add(Arrow((bird.get_rect().right + 30, bird.get_rect().centery)))
+
+        screen.fill((0, 0, 0))
+        # ========= 状態別処理 =========
+        if game_state == STATE_START:
+            draw_start_screen(screen)
+        
+        elif game_state == STATE_PLAY:
+            # ---- 更新 ----
+            bg.update(screen)
+            if DEBUG_DRAW_GROUND_LINE:
+                pg.draw.line(screen, (0, 0, 0), (0, get_ground_y()), (WIDTH, get_ground_y()), 2)
+
+            bird.update(key_lst, screen)
+            enemies.update()
+            items.update()
+            beams.update()
+            arrows.update()
+            exps.update()
+
+            # ---- 描画 ----
+            enemies.draw(screen)
+            items.draw(screen)
+            beams.draw(screen)
+            arrows.draw(screen)
+            exps.draw(screen)
+
+        elif game_state == STATE_TO_FINAL:
+            draw_to_final_screen(screen)
+
+        elif game_state == STATE_CLEAR:
+            draw_clear_screen(screen)
+
+        elif game_state == STATE_GAMEOVER:
+            draw_gameover_screen(screen)
+        
+                # bird を新しい地面Yへ合わせる（めり込み/浮きを防ぐ）
+        bird.get_rect().bottom = get_ground_y()
+        apply_status_from_current(inv, bird)
+        enemies.empty()  # ★ステージ1の敵を消して、以後は2の画像だけ出す
 
 
 
@@ -878,28 +979,18 @@ def main():
             if tmr % params["spawn_interval"] == 0:
                 if random.random() <0.93:
                     spawn_enemy(enemies, stage)
+            if bird.hp <= 0:
+                game_state = STATE_GAMEOVER
+            #他担当と連携
+            if mid_boss_defeated:
+                game_state = STATE_CLEAR
 
         if score > 500 and not mid_boss_spawned and not mid_boss_defeated:
             mid_boss_spawned = True
             enemies.empty()          # ★ モブ全消去
             boss_group.add(MidBoss())
 
-
         maybe_spawn_item(tmr, stage, ITEM_DEFS, items)
-
-        # 更新
-        bg.update(screen)
-        if DEBUG_DRAW_GROUND_LINE:
-            pg.draw.line(screen, (0, 0, 0), (0, get_ground_y()), (WIDTH, get_ground_y()), 2)
-
-        # 更新
-        bird.update(key_lst, screen)
-        enemies.update()
-        items.update()
-        beams.update()
-        beams_tbos.update()
-        arrows.update()
-        exps.update()
 
         hit1 = pg.sprite.groupcollide(enemies, beams, True, True) # ビーム当たり判定
         for emy in hit1.keys():
@@ -1037,13 +1128,13 @@ def main():
         if mid_boss_spawned:
             boss = boss_group.sprites()[0]
 
-        # HPテキスト
-        hp_text = font.render(f"HP:{boss.hp}", True, (255, 255, 255))
-        screen.blit(
-            hp_text,
-            (boss.rect.centerx - hp_text.get_width() // 2,
-             boss.rect.top - 30)
-        )
+            # HPテキスト
+            hp_text = font.render(f"HP:{boss.hp}", True, (255, 255, 255))
+            screen.blit(
+                hp_text,
+                (boss.rect.centerx - hp_text.get_width() // 2,
+                boss.rect.top - 30)
+            )
 
 
         # 【中ボスの更新・描画エリア】
@@ -1097,7 +1188,30 @@ def main():
                 mid_boss_defeated = True
                 score += 1000               # 撃破ボーナス
 
+                            # 敵生成：複数流入
+            if tmr % params["spawn_interval"] == 0:
+                spawn_enemy(enemies, stage)
+                if random.random() < 0.30:
+                    spawn_enemy(enemies, stage)
+            tmr += 1
+
+        elif game_state == STATE_TO_FINAL:
+            state_timer += 1
+            draw_to_final_screen(screen)
+            if state_timer > 120:
+                stage = 2
+                params = stage_params(stage)
+                bg = Background(params["bg_file"], params["bg_speed"])
+                bird.get_rect().bottom = get_ground_y()
+                game_state = STATE_PLAY
+                tmr = 0
                 
+        elif game_state == STATE_CLEAR:
+            draw_clear_screen(screen)
+        
+        elif game_state == STATE_GAMEOVER:
+            draw_gameover_screen(screen)
+
         pg.display.update()
         
         tmr += 1
